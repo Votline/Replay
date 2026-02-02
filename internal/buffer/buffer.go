@@ -51,10 +51,10 @@ func (b *RingBuffer) Read(p []float32) int {
 	}
 
 	for i := range toRead {
-		p[i] = b.buf[i % b.bufSize]
+		p[i] = b.buf[(r+i) % b.bufSize]
 	}
 
-	atomic.AddUint64(&b.wPos, toRead)
+	atomic.AddUint64(&b.rPos, toRead)
 
 	return int(toRead)
 }

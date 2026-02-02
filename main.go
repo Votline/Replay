@@ -7,13 +7,6 @@ import (
 	"replay/internal/audio"
 )
 
-type debugWriter struct {}
-
-func (d debugWriter) Write(p []byte) (int, error) {
-	fmt.Printf("%s\n", string(p))
-	return 0, nil
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: replay <mode>(record|replay")
@@ -26,12 +19,16 @@ func main() {
 		return
 	}
 
-	w := debugWriter{}
+	f, err := os.OpenFile("file.bak", 0666, os.FileMode(os.O_RDWR))
+	if err != nil {panic(err)}
+
 
 	mode := os.Args[1]
 	switch mode {
 	case "record":
-		acl.Record(w)
+		acl.Record(f)
+	case "replay":
+		acl.Replay(f)
 	default:
 		fmt.Println("Usage: replay <mode>(record|replay")
 	}

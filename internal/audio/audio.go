@@ -4,14 +4,19 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
+	"os/exec"
+	"strings"
+
 	"replay/internal/buffer"
+	"replay/internal/queue"
 
 	"github.com/gordonklaus/portaudio"
 )
 
-const bufSize uint64 = 512
+const bufSize uint64 = 8192
 
 type AudioClient struct {
 	bitrate    int
@@ -19,8 +24,9 @@ type AudioClient struct {
 	sampleRate float64
 	duration   time.Duration
 
-	inpBuf *buffer.RingBuffer
-	outBuf *buffer.RingBuffer
+	inpBuf   *buffer.RingBuffer
+	inpQueue *queue.Queue
+	outBuf   *buffer.RingBuffer
 
 	inputDevice  *portaudio.DeviceInfo
 	outputDevice *portaudio.DeviceInfo
@@ -35,10 +41,11 @@ func Init() (*AudioClient, error) {
 		bitrate:    64000,
 		channels:   2,
 		sampleRate: 44100.0,
-		duration: 20,
+		duration:   20,
 
-		inpBuf: buffer.NewRB(bufSize),
-		outBuf: buffer.NewRB(bufSize),
+		inpBuf:   buffer.NewRB(bufSize),
+		inpQueue: queue.NewQueue(bufSize),
+		outBuf:   buffer.NewRB(bufSize),
 
 		inputDevice:  nil,
 		outputDevice: nil,
@@ -51,18 +58,18 @@ func Init() (*AudioClient, error) {
 		if err == nil {
 			acl.inputDevice = input
 		} else {
-			errs = append(errs, err.Error() + "\n")
+			errs = append(errs, err.Error()+"\n")
 		}
 
 		output, err := initOutputDevice()
 		if err == nil {
 			acl.outputDevice = output
 		} else {
-			errs = append(errs, err.Error() + "\n")
+			errs = append(errs, err.Error()+"\n")
 		}
 
 		maxAttempts++
-		time.Sleep(100*time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if acl.inputDevice == nil || acl.outputDevice == nil {
@@ -78,6 +85,7 @@ func initInputDevice() (*portaudio.DeviceInfo, error) {
 			fmt.Println("initInputDevice recovered", r)
 		}
 	}()
+
 	return portaudio.DefaultInputDevice()
 }
 
@@ -87,24 +95,24 @@ func initOutputDevice() (*portaudio.DeviceInfo, error) {
 			fmt.Println("initOutputDevice recovered", r)
 		}
 	}()
-	return portaudio.DefaultInputDevice()
+
+	return portaudio.DefaultOutputDevice()
 }
 
 func (acl *AudioClient) Record(w io.Writer) error {
 	const op = "audio.Record"
 
-	samplePerMs := int(acl.sampleRate * float64(acl.duration) / 1000 ) * acl.channels
+	go acl.AutoRouteToMonitor()
+
+	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
 
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
-				Device: acl.inputDevice,
+				Device:   acl.inputDevice,
 				Channels: acl.channels,
 			},
-			Output: portaudio.StreamDeviceParameters{
-				Channels: 0,
-			},
-			SampleRate: acl.sampleRate,
+			SampleRate:      acl.sampleRate,
 			FramesPerBuffer: samplePerMs,
 		},
 		func(in []float32) {
@@ -118,22 +126,111 @@ func (acl *AudioClient) Record(w io.Writer) error {
 		return fmt.Errorf("%s: start stream: %w", op, err)
 	}
 
-	transferBuf := buffer.NewRB(bufSize)
-	go func(){
+	var wg sync.WaitGroup
+	wg.Go(func() {
 		localBuf := make([]float32, bufSize)
-		ticker := time.NewTicker(acl.duration * time.Millisecond)
-		for range ticker.C {
-			n := transferBuf.Read(localBuf)
-			binary.Write(w, binary.LittleEndian, localBuf[:n])
+		for {
+			n := acl.inpBuf.Read(localBuf)
+			if n > 0 {
+				acl.inpQueue.Push(localBuf[:n])
+			} else {
+				time.Sleep(time.Millisecond)
+			}
 		}
-	}()
+	})
 
 	localBuf := make([]float32, bufSize)
-	ticker := time.NewTicker(acl.duration * time.Millisecond)
-	for range ticker.C {
-		n := acl.inpBuf.Read(localBuf)
-		transferBuf.Write(localBuf[:n])
+	for {
+		n := acl.inpQueue.Pop(localBuf)
+		if n > 0 {
+			if err := binary.Write(w, binary.LittleEndian, localBuf[:n]); err != nil {
+
+				fmt.Printf("%v\n", err.Error())
+			}
+		} else {
+			time.Sleep(time.Millisecond)
+		}
 	}
 
+	return nil
+}
+
+func (acl *AudioClient) Replay(r io.Reader) error {
+	const op = "audio.Replay"
+
+	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
+
+	stream, err := portaudio.OpenStream(
+		portaudio.StreamParameters{
+			Output: portaudio.StreamDeviceParameters{
+				Device:   acl.outputDevice,
+				Channels: acl.channels,
+			},
+			SampleRate:      acl.sampleRate,
+			FramesPerBuffer: samplePerMs,
+		},
+		func(in, out []float32) {
+			n := acl.outBuf.Read(out)
+			for i := n; i < len(out); i++ {
+				out[i] = 0
+			}
+		})
+	if err != nil {
+		return fmt.Errorf("%s: error during record: %w", op, err)
+	}
+	if err := stream.Start(); err != nil {
+		return fmt.Errorf("%s: start stream: %w", op, err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer stream.Stop()
+		defer stream.Close()
+
+		localBuf := make([]float32, bufSize)
+		for {
+			err := binary.Read(r, binary.LittleEndian, localBuf)
+			if err == io.EOF {
+				fmt.Printf("%v\n", err.Error())
+				break
+			}
+			if err != nil {
+				fmt.Printf("%v\n", err.Error())
+				return
+			}
+
+			acl.outBuf.Write(localBuf)
+		}
+
+		time.Sleep(acl.duration * time.Millisecond)
+	})
+
+	wg.Wait()
+
+	return nil
+}
+
+
+
+func (acl *AudioClient) AutoRouteToMonitor() error {
+	out, _ := exec.Command("pactl", "get-default-sink").Output()
+	monitorName := strings.TrimSpace(string(out)) + ".monitor"
+
+	time.Sleep(200 * time.Millisecond)
+
+	out, err := exec.Command("pactl", "list", "short", "source-outputs").Output()
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if line == "" { continue }
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			streamID := fields[0]
+			exec.Command("pactl", "move-source-output", streamID, monitorName).Run()
+		}
+	}
 	return nil
 }
