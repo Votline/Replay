@@ -190,8 +190,7 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 		localBuf := make([]float32, bufSize)
 		for {
 			err := binary.Read(r, binary.LittleEndian, localBuf)
-			if err == io.EOF {
-				fmt.Printf("%v\n", err.Error())
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
 			}
 			if err != nil {
