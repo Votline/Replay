@@ -19,7 +19,7 @@ func PrimaryWindow() (*glfw.Window, error) {
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCompatProfile)
 
-	win, err := glfw.CreateWindow(400, 200, "Replay", nil, nil)
+	win, err := glfw.CreateWindow(250, 100, "Replay", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%s glfw.CreateWindow: %w", op, err)
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"time"
 
 	"replay/internal/audio"
 	"replay/internal/render"
@@ -39,7 +38,7 @@ func main() {
 		acl.Record(f)
 	case "replay":
 		for {
-		_, err := f.Seek(0, 0)
+			_, err := f.Seek(0, 0)
 			if err != nil {
 				fmt.Printf("Seek failed: %s\n", err.Error())
 				os.Exit(1)
@@ -80,15 +79,14 @@ func uiStart() {
 	glfw.SwapInterval(1)
 	glfw.WaitEventsTimeout(0.1)
 
-	pg, ofC := render.Setup()
+	pg, ofC, ofTex := render.Setup()
 	defer gl.DeleteProgram(pg)
 
-	view := ui.CreateHomeView(pg, ofC)
+	view := ui.CreateHomeView(pg, ofC, ofTex)
 
 	for !win.ShouldClose() {
 		gl.Clear(gl.COLOR_BUFFER_BIT)
 
-		time.Sleep(time.Millisecond)
 		view.Render()
 
 		glfw.PollEvents()
