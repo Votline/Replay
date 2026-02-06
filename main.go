@@ -82,7 +82,7 @@ func uiStart() {
 	pg, ofC, ofTex := render.Setup()
 	defer gl.DeleteProgram(pg)
 
-	view := ui.CreateHomeView(pg, ofC, ofTex)
+	view := ui.CreateHomeView(pg, ofC, ofTex, win)
 
 	for !win.ShouldClose() {
 		gl.Clear(gl.COLOR_BUFFER_BIT)

@@ -6,6 +6,11 @@ import (
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
+const (
+	winW = 250
+	winH = 100
+)
+
 func PrimaryWindow() (*glfw.Window, error) {
 	const op = "ui.PrimaryWindow"
 
@@ -19,7 +24,7 @@ func PrimaryWindow() (*glfw.Window, error) {
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCompatProfile)
 
-	win, err := glfw.CreateWindow(250, 100, "Replay", nil, nil)
+	win, err := glfw.CreateWindow(winW, winH, "Replay", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%s glfw.CreateWindow: %w", op, err)
 	}
