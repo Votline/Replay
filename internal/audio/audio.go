@@ -4,11 +4,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"sync"
-	"time"
-
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"replay/internal/buffer"
 	"replay/internal/queue"
@@ -19,10 +18,12 @@ import (
 const bufSize uint64 = 8192
 
 type AudioClient struct {
-	bitrate    int
-	channels   int
-	sampleRate float64
-	duration   time.Duration
+	bitrate     int
+	channels    int
+	sampleRate  float64
+	isPlaying   bool
+	isRecording bool
+	duration    time.Duration
 
 	inpBuf   *buffer.RingBuffer
 	inpQueue *queue.Queue
@@ -102,6 +103,8 @@ func initOutputDevice() (*portaudio.DeviceInfo, error) {
 func (acl *AudioClient) Record(w io.Writer) error {
 	const op = "audio.Record"
 
+	acl.isRecording = true
+
 	go acl.AutoRouteToMonitor()
 
 	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
@@ -140,11 +143,10 @@ func (acl *AudioClient) Record(w io.Writer) error {
 	})
 
 	localBuf := make([]float32, bufSize)
-	for {
+	for acl.isRecording {
 		n := acl.inpQueue.Pop(localBuf)
 		if n > 0 {
 			if err := binary.Write(w, binary.LittleEndian, localBuf[:n]); err != nil {
-
 				fmt.Printf("%v\n", err.Error())
 			}
 		} else {
@@ -157,6 +159,7 @@ func (acl *AudioClient) Record(w io.Writer) error {
 
 func (acl *AudioClient) Replay(r io.Reader) error {
 	const op = "audio.Replay"
+	acl.isPlaying = true
 
 	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
 
@@ -188,7 +191,7 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 		defer stream.Close()
 
 		localBuf := make([]float32, bufSize)
-		for {
+		for acl.isPlaying {
 			err := binary.Read(r, binary.LittleEndian, localBuf)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
@@ -209,8 +212,6 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 	return nil
 }
 
-
-
 func (acl *AudioClient) AutoRouteToMonitor() error {
 	out, _ := exec.Command("pactl", "get-default-sink").Output()
 	monitorName := strings.TrimSpace(string(out)) + ".monitor"
@@ -224,7 +225,9 @@ func (acl *AudioClient) AutoRouteToMonitor() error {
 
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		if line == "" { continue }
+		if line == "" {
+			continue
+		}
 		fields := strings.Fields(line)
 		if len(fields) > 0 {
 			streamID := fields[0]
@@ -232,4 +235,20 @@ func (acl *AudioClient) AutoRouteToMonitor() error {
 		}
 	}
 	return nil
+}
+
+func (acl *AudioClient) StopReplay() {
+	acl.isPlaying = false
+}
+
+func (acl *AudioClient) IsPlaying() bool {
+	return acl.isPlaying
+}
+
+func (acl *AudioClient) StopRecording() {
+	acl.isRecording = false
+}
+
+func (acl *AudioClient) IsRecording() bool {
+	return acl.isRecording
 }

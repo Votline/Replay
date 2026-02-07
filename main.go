@@ -14,8 +14,17 @@ import (
 )
 
 func main() {
+	f, err := os.OpenFile("file.bak", 0o666, os.FileMode(os.O_RDWR))
+	if err != nil {
+		f, err = os.Create("file.bak")
+		if err != nil {
+			fmt.Printf("Create file error: %s\n", err.Error())
+			return
+		}
+	}
+
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: replay <mode>(record|replay")
+		uiStart(f)
 		return
 	}
 
@@ -23,13 +32,6 @@ func main() {
 	if err != nil {
 		fmt.Printf("Init audio error: %s\n", err.Error())
 		return
-	}
-
-	go uiStart()
-
-	f, err := os.OpenFile("file.bak", 0o666, os.FileMode(os.O_RDWR))
-	if err != nil {
-		panic(err)
 	}
 
 	mode := os.Args[1]
@@ -54,7 +56,7 @@ func init() {
 	runtime.LockOSThread()
 }
 
-func uiStart() {
+func uiStart(f *os.File) {
 	const op = "uiSetup"
 
 	if err := glfw.Init(); err != nil {
@@ -82,7 +84,11 @@ func uiStart() {
 	pg, ofC, ofTex := render.Setup()
 	defer gl.DeleteProgram(pg)
 
-	view := ui.CreateHomeView(pg, ofC, ofTex, win)
+	view, err := ui.CreateHomeView(pg, ofC, ofTex, win, f)
+	if err != nil {
+		fmt.Printf("%s: Failed to create home view: %v", op, err)
+		os.Exit(1)
+	}
 
 	for !win.ShouldClose() {
 		gl.Clear(gl.COLOR_BUFFER_BIT)
