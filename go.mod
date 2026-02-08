@@ -7,3 +7,8 @@ require (
 	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20250301202403-da16c1255728
 	github.com/gordonklaus/portaudio v0.0.0-20250206071425-98a94950218b
 )
+
+require (
+	go.uber.org/multierr v1.10.0 // indirect
+	go.uber.org/zap v1.27.1 // indirect
+)

@@ -5,7 +5,7 @@ import (
 )
 
 type Queue struct {
-	mu sync.Mutex
+	mu  sync.Mutex
 	buf []float32
 }
 
@@ -38,4 +38,11 @@ func (q *Queue) Pop(data []float32) int {
 	q.buf = q.buf[n:]
 
 	return n
+}
+
+func (q *Queue) Reset() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.buf = q.buf[:0]
 }

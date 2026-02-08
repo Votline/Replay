@@ -8,16 +8,16 @@ import (
 
 type RingBuffer struct {
 	wPos, rPos uint64
-	bufSize uint64
-	buf []float32
+	bufSize    uint64
+	buf        []float32
 }
 
 func NewRB(bufSize uint64) *RingBuffer {
 	return &RingBuffer{
-		wPos: 0,
-		rPos: 0,
+		wPos:    0,
+		rPos:    0,
 		bufSize: bufSize,
-		buf: make([]float32, bufSize),
+		buf:     make([]float32, bufSize),
 	}
 }
 
@@ -33,7 +33,7 @@ func (b *RingBuffer) Write(val []float32) {
 				continue
 			}
 
-			b.buf[w % b.bufSize] = v
+			b.buf[w%b.bufSize] = v
 			atomic.AddUint64(&b.wPos, 1)
 			break
 		}
@@ -51,7 +51,7 @@ func (b *RingBuffer) Read(p []float32) int {
 	}
 
 	for i := range toRead {
-		p[i] = b.buf[(r+i) % b.bufSize]
+		p[i] = b.buf[(r+i)%b.bufSize]
 	}
 
 	atomic.AddUint64(&b.rPos, toRead)
@@ -67,4 +67,9 @@ func spin(idx *int) {
 		time.Sleep(time.Millisecond)
 		*idx = 0
 	}
+}
+
+func (b *RingBuffer) Reset() {
+	atomic.StoreUint64(&b.wPos, 0)
+	atomic.StoreUint64(&b.rPos, 0)
 }

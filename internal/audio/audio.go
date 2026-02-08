@@ -13,6 +13,7 @@ import (
 	"replay/internal/queue"
 
 	"github.com/gordonklaus/portaudio"
+	"go.uber.org/zap"
 )
 
 const bufSize uint64 = 8192
@@ -31,9 +32,16 @@ type AudioClient struct {
 
 	inputDevice  *portaudio.DeviceInfo
 	outputDevice *portaudio.DeviceInfo
+
+	log *zap.Logger
 }
 
-func Init() (*AudioClient, error) {
+type AudioSegment struct {
+	Start int64
+	End   int64
+}
+
+func Init(log *zap.Logger) (*AudioClient, error) {
 	if err := portaudio.Initialize(); err != nil {
 		return nil, fmt.Errorf("Init portaudio: %w", err)
 	}
@@ -50,19 +58,21 @@ func Init() (*AudioClient, error) {
 
 		inputDevice:  nil,
 		outputDevice: nil,
+
+		log: log,
 	}
 
 	errs := make([]string, 0, 20)
 	maxAttempts := 0
 	for (acl.inputDevice == nil || acl.outputDevice == nil) && maxAttempts <= 10 {
-		input, err := initInputDevice()
+		input, err := acl.initInputDevice()
 		if err == nil {
 			acl.inputDevice = input
 		} else {
 			errs = append(errs, err.Error()+"\n")
 		}
 
-		output, err := initOutputDevice()
+		output, err := acl.initOutputDevice()
 		if err == nil {
 			acl.outputDevice = output
 		} else {
@@ -80,20 +90,20 @@ func Init() (*AudioClient, error) {
 	return acl, nil
 }
 
-func initInputDevice() (*portaudio.DeviceInfo, error) {
+func (acl *AudioClient) initInputDevice() (*portaudio.DeviceInfo, error) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("initInputDevice recovered", r)
+			acl.log.Error("initInputDevice recovered", zap.Any("recover", r))
 		}
 	}()
 
 	return portaudio.DefaultInputDevice()
 }
 
-func initOutputDevice() (*portaudio.DeviceInfo, error) {
+func (acl *AudioClient) initOutputDevice() (*portaudio.DeviceInfo, error) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("initOutputDevice recovered", r)
+			acl.log.Error("initOutputDevice recovered", zap.Any("recover", r))
 		}
 	}()
 
@@ -102,6 +112,9 @@ func initOutputDevice() (*portaudio.DeviceInfo, error) {
 
 func (acl *AudioClient) Record(w io.Writer) error {
 	const op = "audio.Record"
+
+	acl.inpBuf.Reset()
+	acl.inpQueue.Reset()
 
 	acl.isRecording = true
 
@@ -129,10 +142,13 @@ func (acl *AudioClient) Record(w io.Writer) error {
 		return fmt.Errorf("%s: start stream: %w", op, err)
 	}
 
+	defer stream.Stop()
+	defer stream.Close()
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		localBuf := make([]float32, bufSize)
-		for {
+		for acl.isRecording {
 			n := acl.inpBuf.Read(localBuf)
 			if n > 0 {
 				acl.inpQueue.Push(localBuf[:n])
@@ -159,6 +175,8 @@ func (acl *AudioClient) Record(w io.Writer) error {
 
 func (acl *AudioClient) Replay(r io.Reader) error {
 	const op = "audio.Replay"
+
+	acl.outBuf.Reset()
 	acl.isPlaying = true
 
 	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
@@ -185,11 +203,11 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 		return fmt.Errorf("%s: start stream: %w", op, err)
 	}
 
+	defer stream.Stop()
+	defer stream.Close()
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		defer stream.Stop()
-		defer stream.Close()
-
 		localBuf := make([]float32, bufSize)
 		for acl.isPlaying {
 			err := binary.Read(r, binary.LittleEndian, localBuf)
@@ -197,7 +215,7 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 				break
 			}
 			if err != nil {
-				fmt.Printf("%v\n", err.Error())
+				acl.log.Error("Read error", zap.Error(err))
 				return
 			}
 

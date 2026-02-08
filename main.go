@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"runtime"
@@ -11,44 +12,69 @@ import (
 
 	"github.com/go-gl/gl/v4.1-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
+func initLog(d bool) *zap.Logger {
+	cfg := zap.NewDevelopmentConfig()
+	cfg.Encoding = "console"
+	cfg.EncoderConfig.TimeKey = ""
+	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	cfg.DisableStacktrace = true
+
+	lvl := zapcore.ErrorLevel
+	if d {
+		lvl = zapcore.DebugLevel
+	}
+	cfg.Level = zap.NewAtomicLevelAt(lvl)
+
+	log, _ := cfg.Build()
+
+	return log
+}
+
 func main() {
-	f, err := os.OpenFile("file.bak", 0o666, os.FileMode(os.O_RDWR))
-	if err != nil {
-		f, err = os.Create("file.bak")
-		if err != nil {
-			fmt.Printf("Create file error: %s\n", err.Error())
-			return
-		}
-	}
+	debug := flag.Bool("debug", false, "debug mode")
+	path := flag.String("path", "", "path to file")
+	mode := flag.String("mode", "", "mode(record|replay)")
+	flag.Parse()
 
-	if len(os.Args) < 2 {
-		uiStart(f)
+	log := initLog(*debug)
+
+	if *path == "" {
+		log.Error("Path is empty")
 		return
 	}
 
-	acl, err := audio.Init()
+	f, err := os.OpenFile(*path, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
-		fmt.Printf("Init audio error: %s\n", err.Error())
+		log.Error("Open file error", zap.Error(err))
 		return
 	}
 
-	mode := os.Args[1]
-	switch mode {
+	acl, err := audio.Init(log)
+	if err != nil {
+		log.Error("Init audio error", zap.Error(err))
+		return
+	}
+
+	switch *mode {
 	case "record":
 		acl.Record(f)
 	case "replay":
 		for {
 			_, err := f.Seek(0, 0)
 			if err != nil {
-				fmt.Printf("Seek failed: %s\n", err.Error())
+				log.Error("Seek file error", zap.Error(err))
 				os.Exit(1)
 			}
 			acl.Replay(f)
 		}
+	case "":
+		uiStart(f, log)
 	default:
-		fmt.Println("Usage: replay <mode>(record|replay")
+		fmt.Println("Usage: replay --path=file.bak --mode=record|replay")
 	}
 }
 
@@ -56,23 +82,29 @@ func init() {
 	runtime.LockOSThread()
 }
 
-func uiStart(f *os.File) {
+func uiStart(f *os.File, log *zap.Logger) {
 	const op = "uiSetup"
 
 	if err := glfw.Init(); err != nil {
-		fmt.Printf("Failed to initialize GLFW: %v", err)
+		log.Error("Failed to initialize GLFW",
+			zap.String("op", op),
+			zap.Error(err))
 		os.Exit(1)
 	}
 	defer glfw.Terminate()
 
 	if err := gl.Init(); err != nil {
-		fmt.Printf("Failed to initialize OpenGL: %v", err)
+		log.Error("Failed to initialize OpenGL",
+			zap.String("op", op),
+			zap.Error(err))
 		os.Exit(1)
 	}
 
 	win, err := ui.PrimaryWindow()
 	if err != nil {
-		fmt.Printf("%s: Failed to initialize window: %v", op, err)
+		log.Error("Failed to create window",
+			zap.String("op", op),
+			zap.Error(err))
 		os.Exit(1)
 	}
 
@@ -84,9 +116,11 @@ func uiStart(f *os.File) {
 	pg, ofC, ofTex := render.Setup()
 	defer gl.DeleteProgram(pg)
 
-	view, err := ui.CreateHomeView(pg, ofC, ofTex, win, f)
+	view, err := ui.CreateHomeView(pg, ofC, ofTex, win, f, log)
 	if err != nil {
-		fmt.Printf("%s: Failed to create home view: %v", op, err)
+		log.Error("Failed to create home view",
+			zap.String("op", op),
+			zap.Error(err))
 		os.Exit(1)
 	}
 

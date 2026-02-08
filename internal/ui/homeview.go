@@ -1,13 +1,17 @@
 package ui
 
 import (
+	"io"
 	"os"
+	"time"
 
 	"replay/internal/audio"
 	"replay/internal/render"
+	"replay/internal/writer"
 
 	"github.com/go-gl/gl/v4.1-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"go.uber.org/zap"
 )
 
 type elemMesh struct {
@@ -18,23 +22,27 @@ type elemMesh struct {
 }
 
 type HomeView struct {
-	ofC   int32
-	ofTex int32
-	pg    uint32
-	texID uint32
-	elems [7]elemMesh
-	acl   *audio.AudioClient
-	win   *glfw.Window
-	f     *os.File
+	ofC       int32
+	ofTex     int32
+	pg        uint32
+	texID     uint32
+	elems     [7]elemMesh
+	acl       *audio.AudioClient
+	win       *glfw.Window
+	f         *os.File
+	segments  [3]audio.AudioSegment
+	curIdx    int
+	log       *zap.Logger
+	recWriter *writer.SectionWriter
 }
 
-func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File) (*HomeView, error) {
-	acl, err := audio.Init()
+func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, log *zap.Logger) (*HomeView, error) {
+	acl, err := audio.Init(log)
 	if err != nil {
 		return nil, err
 	}
 
-	hv := &HomeView{pg: pg, ofC: ofC, ofTex: ofTex, win: win, f: f, acl: acl}
+	hv := &HomeView{pg: pg, ofC: ofC, ofTex: ofTex, win: win, f: f, acl: acl, log: log}
 	hv.texID = render.LoadTexture("assets/texture.png")
 
 	addRect := func(x, y, w, h, u1, v1, u2, v2 float32, idx int, name string) {
@@ -113,29 +121,113 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 					switch el.name {
 					case "Play&Pause":
 						if hv.acl.IsPlaying() {
+							hv.log.Info("Stop replay")
+
 							hv.acl.StopReplay()
 							hv.elems[5], hv.elems[0] = hv.elems[0], hv.elems[5]
-							return
+
+							hv.log.Info("Swapped buttons")
 						} else {
+							hv.log.Info("Start replay")
+
 							hv.elems[5], hv.elems[0] = hv.elems[0], hv.elems[5]
-							go hv.acl.Replay(hv.f)
+							hv.restartReplay()
+
+							hv.log.Info("Swapped buttons")
 						}
-					case "Prev":
 					case "Next":
+						hv.curIdx++
+						if hv.curIdx > len(hv.segments)-1 {
+							hv.curIdx = 0
+							hv.segments[hv.curIdx].Start = 0
+							hv.log.Info("Next",
+								zap.Int("curIdx", hv.curIdx))
+							return
+						}
+						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
+						hv.log.Info("Next",
+							zap.Int("curIdx", hv.curIdx))
+					case "Prev":
+						hv.curIdx--
+						if hv.curIdx-1 < 0 {
+							hv.curIdx = 0
+							hv.segments[hv.curIdx].Start = 0
+							hv.log.Info("Prev",
+								zap.Int("curIdx", hv.curIdx))
+							return
+						}
+						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
+						hv.log.Info("Prev",
+							zap.Int("curIdx", hv.curIdx))
 					case "Reset":
+						hv.curIdx = 0
+						hv.segments = [3]audio.AudioSegment{}
 						hv.f.Seek(0, 0)
 					case "Record":
 						if hv.acl.IsRecording() {
+							hv.log.Info("Stop record")
+
 							hv.acl.StopRecording()
+							hv.segments[hv.curIdx].End = hv.recWriter.Pos()
+							hv.recWriter = nil
+
+							hv.log.Info("Indexies", zap.Any("seg", hv.segments[hv.curIdx]))
+
 							hv.elems[4], hv.elems[6] = hv.elems[6], hv.elems[4]
+
+							hv.log.Info("Swapped buttons")
 							return
 						} else {
+							hv.log.Info("Start record")
+
+							hv.recWriter = writer.NewSectionWriter(hv.f, hv.segments[hv.curIdx].Start)
+
+							hv.log.Info("Indexies", zap.Any("seg", hv.segments[hv.curIdx]))
+
 							hv.elems[6], hv.elems[4] = hv.elems[4], hv.elems[6]
-							go hv.acl.Record(hv.f)
+							time.Sleep(200 * time.Millisecond)
+							go hv.acl.Record(hv.recWriter)
+
+							hv.log.Info("Start record")
 						}
 					}
 				}
 			}
 		}
 	}
+}
+
+func (hv *HomeView) getAudioIdx() int64 {
+	hv.log.Info("Get audio file size")
+
+	info, err := hv.f.Stat()
+	if err != nil {
+		hv.log.Error("Get audio file size error. Zero should be returned", zap.Error(err))
+		return 0
+	}
+
+	hv.log.Info("Get audio file size", zap.Int64("size", info.Size()))
+
+	return info.Size()
+}
+
+func (hv *HomeView) restartReplay() {
+	if hv.curIdx >= len(hv.segments) {
+		return
+	}
+	seg := hv.segments[hv.curIdx]
+
+	if seg.End <= seg.Start {
+		hv.log.Error("Empty segment", zap.Any("seg", seg))
+		return
+	}
+
+	hv.log.Info("Restart replay", zap.Any("seg", seg))
+
+	r := io.NewSectionReader(
+		hv.f,
+		int64(seg.Start),
+		int64(seg.End-seg.Start),
+	)
+	go hv.acl.Replay(r)
 }
