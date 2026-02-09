@@ -34,6 +34,7 @@ type HomeView struct {
 	curIdx    int
 	log       *zap.Logger
 	recWriter *writer.SectionWriter
+	recReader *io.SectionReader
 }
 
 func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, log *zap.Logger) (*HomeView, error) {
@@ -131,7 +132,15 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 							hv.log.Info("Start replay")
 
 							hv.elems[5], hv.elems[0] = hv.elems[0], hv.elems[5]
-							hv.restartReplay()
+
+							go func() {
+								hv.restartReplay()
+								hv.acl.Replay(hv.recReader)
+								for hv.acl.IsPlaying() {
+									hv.restartReplay()
+									hv.acl.Replay(hv.recReader)
+								}
+							}()
 
 							hv.log.Info("Swapped buttons")
 						}
@@ -224,10 +233,9 @@ func (hv *HomeView) restartReplay() {
 
 	hv.log.Info("Restart replay", zap.Any("seg", seg))
 
-	r := io.NewSectionReader(
+	hv.recReader = io.NewSectionReader(
 		hv.f,
 		int64(seg.Start),
 		int64(seg.End-seg.Start),
 	)
-	go hv.acl.Replay(r)
 }
