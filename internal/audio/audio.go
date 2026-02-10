@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"replay/internal/buffer"
+	"replay/internal/compressor"
 	"replay/internal/queue"
 
 	"github.com/gordonklaus/portaudio"
 	"go.uber.org/zap"
 )
 
-const bufSize uint64 = 8192
+const bufSize = 8192
 
 type AudioClient struct {
 	bitrate     int
@@ -33,6 +34,9 @@ type AudioClient struct {
 	inputDevice  *portaudio.DeviceInfo
 	outputDevice *portaudio.DeviceInfo
 
+	inpCmpr *compressor.Compressor
+	outCmpr *compressor.Compressor
+
 	log *zap.Logger
 }
 
@@ -47,9 +51,9 @@ func Init(log *zap.Logger) (*AudioClient, error) {
 	}
 
 	acl := &AudioClient{
-		bitrate:    64000,
+		bitrate:    48000,
 		channels:   2,
-		sampleRate: 44100.0,
+		sampleRate: 48000.0,
 		duration:   20,
 
 		inpBuf:   buffer.NewRB(bufSize),
@@ -86,6 +90,18 @@ func Init(log *zap.Logger) (*AudioClient, error) {
 	if acl.inputDevice == nil || acl.outputDevice == nil {
 		return nil, fmt.Errorf("Failed to find input or output device. Errors:\n%v", errs)
 	}
+
+	inpCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create compressor: %w", err)
+	}
+	outCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create compressor: %w", err)
+	}
+
+	acl.inpCmpr = inpCmpr
+	acl.outCmpr = outCmpr
 
 	return acl, nil
 }
@@ -133,6 +149,7 @@ func (acl *AudioClient) Record(w io.Writer) error {
 		},
 		func(in []float32) {
 			acl.inpBuf.Write(in)
+			acl.log.Info("Recorded", zap.Int("len", len(in)))
 		})
 	if err != nil {
 		return fmt.Errorf("%s: error during record: %w", op, err)
@@ -150,6 +167,7 @@ func (acl *AudioClient) Record(w io.Writer) error {
 		localBuf := make([]float32, bufSize)
 		for acl.isRecording {
 			n := acl.inpBuf.Read(localBuf)
+			acl.log.Info("Read", zap.Int("len", n))
 			if n > 0 {
 				acl.inpQueue.Push(localBuf[:n])
 			} else {
@@ -158,12 +176,27 @@ func (acl *AudioClient) Record(w io.Writer) error {
 		}
 	})
 
-	localBuf := make([]float32, bufSize)
+	localBuf := make([]float32, samplePerMs)
 	for acl.isRecording {
 		n := acl.inpQueue.Pop(localBuf)
+		acl.log.Info("Popped", zap.Int("len", n))
 		if n > 0 {
-			if err := binary.Write(w, binary.LittleEndian, localBuf[:n]); err != nil {
-				fmt.Printf("%v\n", err.Error())
+			compressed, err := acl.inpCmpr.Compress(localBuf[:n])
+			if err != nil {
+				acl.log.Error("Compress error. Drop chunk", zap.Error(err))
+				continue
+			}
+			acl.log.Info("Compressed", zap.Int("len", len(compressed)))
+
+			size := uint32(len(compressed))
+			if err := binary.Write(w, binary.LittleEndian, size); err != nil {
+				acl.log.Error("Write size error", zap.Error(err))
+				continue
+			}
+
+			if _, err := w.Write(compressed); err != nil {
+				acl.log.Error("Write compressed error", zap.Error(err))
+				continue
 			}
 		} else {
 			time.Sleep(time.Millisecond)
@@ -208,10 +241,12 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		localBuf := make([]float32, bufSize)
 		for acl.isPlaying {
-			err := binary.Read(r, binary.LittleEndian, localBuf)
+			var size uint32
+
+			err := binary.Read(r, binary.LittleEndian, &size)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				acl.log.Info("End of file")
 				break
 			}
 			if err != nil {
@@ -219,7 +254,20 @@ func (acl *AudioClient) Replay(r io.Reader) error {
 				return
 			}
 
-			acl.outBuf.Write(localBuf)
+			packet := make([]byte, size)
+			_, err = io.ReadFull(r, packet)
+			if err != nil {
+				acl.log.Error("Read packet error", zap.Error(err))
+				return
+			}
+
+			pcm, err := acl.outCmpr.Decompress(packet, bufSize)
+			if err != nil {
+				acl.log.Error("Decompress error. Drop chunk", zap.Error(err))
+				continue
+			}
+
+			acl.outBuf.Write(pcm)
 		}
 
 		time.Sleep(acl.duration * time.Millisecond)

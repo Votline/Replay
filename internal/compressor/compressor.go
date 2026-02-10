@@ -5,9 +5,12 @@ import (
 
 	"github.com/hraban/opus"
 	"github.com/klauspost/compress/zstd"
+	"go.uber.org/zap"
 )
 
 type Compressor struct {
+	log *zap.Logger
+
 	opusEn *opus.Encoder
 	opusDe *opus.Decoder
 
@@ -20,16 +23,18 @@ type Compressor struct {
 	frameDurMs int
 }
 
-func NewCompressor(ch, btr, smpR, frameDurMs int) (*Compressor, error) {
+func NewCompressor(ch, btr, smpR, frameDurMs int, log *zap.Logger) (*Compressor, error) {
 	const op = "compressor.NewCompressor"
 
-	opusEn, err := opus.NewEncoder(smpR, ch, opus.AppVoIP)
+	fmt.Printf("NewCompressor: %d %d %d %d\n", ch, btr, smpR, frameDurMs)
+
+	opusEn, err := opus.NewEncoder(smpR, ch, opus.AppAudio)
 	if err != nil {
 		return nil, fmt.Errorf("%s: encoder init: %w", op, err)
 	}
 	opusEn.SetBitrate(btr)
 
-	opusDe, err := opus.NewDecoder(smpR, ch, opus.AppVoIP)
+	opusDe, err := opus.NewDecoder(smpR, ch)
 	if err != nil {
 		return nil, fmt.Errorf("%s: decoder init: %w", op, err)
 	}
@@ -45,6 +50,8 @@ func NewCompressor(ch, btr, smpR, frameDurMs int) (*Compressor, error) {
 	}
 
 	return &Compressor{
+		log: log,
+
 		opusEn: opusEn,
 		opusDe: opusDe,
 
@@ -58,14 +65,20 @@ func NewCompressor(ch, btr, smpR, frameDurMs int) (*Compressor, error) {
 	}, nil
 }
 
-func (c *Compressor) Compress(pcm []int16) ([]byte, error) {
+func (c *Compressor) Compress(pcm []float32) ([]byte, error) {
 	const op = "compressor.Compress"
 
 	if len(pcm) == 0 {
+		c.log.Warn("Empty pcm")
 		return nil, nil
 	}
 
-	encoded, err := c.encode(pcm)
+	pcmI16 := make([]int16, len(pcm))
+	for i, v := range pcm {
+		pcmI16[i] = int16(v * 32767)
+	}
+
+	encoded, err := c.encode(pcmI16)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
@@ -76,10 +89,17 @@ func (c *Compressor) Compress(pcm []int16) ([]byte, error) {
 func (c *Compressor) encode(pcm []int16) ([]byte, error) {
 	const op = "compressor.encode"
 
-	data := make([]byte, len(pcm))
-	n, err := c.opusEn.Encode(pcm, data)
+	samplesPerFrame := (c.smpR * c.frameDurMs / 1000) * c.ch
+	if len(pcm) < samplesPerFrame {
+		return nil, fmt.Errorf("%s: pcm too short: %d < %d", op, len(pcm), samplesPerFrame)
+	}
+
+	frame := pcm[:samplesPerFrame]
+
+	data := make([]byte, 1275)
+	n, err := c.opusEn.Encode(frame, data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: encode: %w", op, err)
 	}
 
 	res := make([]byte, n)
@@ -87,7 +107,7 @@ func (c *Compressor) encode(pcm []int16) ([]byte, error) {
 	return res, nil
 }
 
-func (c *Compressor) Decompress(data []byte, bufSize int) ([]int16, error) {
+func (c *Compressor) Decompress(data []byte, bufSize int) ([]float32, error) {
 	const op = "compressor.Decompress"
 
 	if len(data) == 0 {
@@ -96,12 +116,17 @@ func (c *Compressor) Decompress(data []byte, bufSize int) ([]int16, error) {
 
 	decoded, err := c.zstdDe.DecodeAll(data, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: decode all: %w", op, err)
 	}
 
-	pcm, err := c.decode(decoded, bufSize)
+	pcmI16, err := c.decode(decoded, bufSize)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: decode to int16: %w", op, err)
+	}
+
+	pcm := make([]float32, len(pcmI16))
+	for i, v := range pcmI16 {
+		pcm[i] = float32(v) / 32767
 	}
 
 	return pcm, nil
@@ -116,7 +141,9 @@ func (c *Compressor) decode(data []byte, bufSize int) ([]int16, error) {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	res := make([]int16, n)
-	copy(res, pcm[:n])
+	totalSamples := n * c.ch
+
+	res := make([]int16, totalSamples)
+	copy(res, pcm[:totalSamples])
 	return res, nil
 }

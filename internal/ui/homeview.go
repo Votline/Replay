@@ -197,7 +197,7 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 							time.Sleep(200 * time.Millisecond)
 							go hv.acl.Record(hv.recWriter)
 
-							hv.log.Info("Start record")
+							hv.log.Info("Swapped buttons")
 						}
 					}
 				}
