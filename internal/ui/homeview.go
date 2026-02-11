@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/binary"
 	"io"
 	"os"
 	"time"
@@ -44,6 +45,7 @@ func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, l
 	}
 
 	hv := &HomeView{pg: pg, ofC: ofC, ofTex: ofTex, win: win, f: f, acl: acl, log: log}
+	hv.loadSegments()
 	hv.texID = render.LoadTexture("assets/texture.png")
 
 	addRect := func(x, y, w, h, u1, v1, u2, v2 float32, idx int, name string) {
@@ -144,34 +146,6 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 
 							hv.log.Info("Swapped buttons")
 						}
-					case "Next":
-						hv.curIdx++
-						if hv.curIdx > len(hv.segments)-1 {
-							hv.curIdx = 0
-							hv.segments[hv.curIdx].Start = 0
-							hv.log.Info("Next",
-								zap.Int("curIdx", hv.curIdx))
-							return
-						}
-						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
-						hv.log.Info("Next",
-							zap.Int("curIdx", hv.curIdx))
-					case "Prev":
-						hv.curIdx--
-						if hv.curIdx-1 < 0 {
-							hv.curIdx = 0
-							hv.segments[hv.curIdx].Start = 0
-							hv.log.Info("Prev",
-								zap.Int("curIdx", hv.curIdx))
-							return
-						}
-						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
-						hv.log.Info("Prev",
-							zap.Int("curIdx", hv.curIdx))
-					case "Reset":
-						hv.curIdx = 0
-						hv.segments = [3]audio.AudioSegment{}
-						hv.f.Seek(0, 0)
 					case "Record":
 						if hv.acl.IsRecording() {
 							hv.log.Info("Stop record")
@@ -185,9 +159,19 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 							hv.elems[4], hv.elems[6] = hv.elems[6], hv.elems[4]
 
 							hv.log.Info("Swapped buttons")
+
+							hv.SaveSegments()
+
+							hv.log.Info("Save segments")
 							return
 						} else {
 							hv.log.Info("Start record")
+
+							if hv.segments[hv.curIdx].Start == 0 {
+								pos, _ := hv.f.Seek(0, io.SeekCurrent)
+								hv.segments[hv.curIdx].Start = pos
+								hv.log.Info("Set start", zap.Int64("pos", pos))
+							}
 
 							hv.recWriter = writer.NewSectionWriter(hv.f, hv.segments[hv.curIdx].Start)
 
@@ -199,6 +183,34 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 
 							hv.log.Info("Swapped buttons")
 						}
+					case "Next":
+						hv.curIdx++
+						if hv.curIdx > len(hv.segments)-1 {
+							hv.curIdx = 0
+							hv.segments[hv.curIdx].Start = 48
+							hv.log.Info("Next",
+								zap.Int("curIdx", hv.curIdx))
+							return
+						}
+						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
+						hv.log.Info("Next",
+							zap.Int("curIdx", hv.curIdx))
+					case "Prev":
+						hv.curIdx--
+						if hv.curIdx-1 < 0 {
+							hv.curIdx = 0
+							hv.segments[hv.curIdx].Start = 48
+							hv.log.Info("Prev",
+								zap.Int("curIdx", hv.curIdx))
+							return
+						}
+						hv.segments[hv.curIdx].Start = hv.segments[hv.curIdx-1].End
+						hv.log.Info("Prev",
+							zap.Int("curIdx", hv.curIdx))
+					case "Reset":
+						hv.curIdx = 0
+						hv.segments = [3]audio.AudioSegment{}
+						hv.f.Seek(0, 0)
 					}
 				}
 			}
@@ -226,16 +238,67 @@ func (hv *HomeView) restartReplay() {
 	}
 	seg := hv.segments[hv.curIdx]
 
+	hv.recReader = io.NewSectionReader(
+		hv.f,
+		int64(seg.Start),
+		int64(seg.End-seg.Start),
+	)
+
 	if seg.End <= seg.Start {
 		hv.log.Error("Empty segment", zap.Any("seg", seg))
 		return
 	}
 
 	hv.log.Info("Restart replay", zap.Any("seg", seg))
+}
 
-	hv.recReader = io.NewSectionReader(
-		hv.f,
-		int64(seg.Start),
-		int64(seg.End-seg.Start),
-	)
+func (hv *HomeView) loadSegments() {
+	data := make([]byte, 48)
+	n, err := hv.f.ReadAt(data, 0)
+	if err != nil {
+		hv.log.Error("Read segments error", zap.Error(err))
+		return
+	}
+	hv.log.Info("Read segments", zap.Int("n", n))
+
+	if n == 0 {
+		hv.log.Error("Empty segments")
+		return
+	}
+
+	var segments [3]audio.AudioSegment
+	for i := range 3 {
+		offset := i * 16
+		s := binary.LittleEndian.Uint64(data[offset : offset+8])
+		e := binary.LittleEndian.Uint64(data[offset+8 : offset+16])
+
+		if s >= 48 && e > s {
+			segments[i] = audio.AudioSegment{
+				Start: int64(s),
+				End:   int64(e),
+			}
+			hv.log.Info("Load segment", zap.Any("segment", segments[i]))
+		}
+	}
+
+	hv.log.Info("Load segments", zap.Any("segments", segments))
+
+	hv.segments = segments
+}
+
+func (hv *HomeView) SaveSegments() {
+	data := make([]byte, 48)
+	for i := range 3 {
+		offset := i * 16
+		binary.LittleEndian.PutUint64(data[offset:offset+8], uint64(hv.segments[i].Start))
+		binary.LittleEndian.PutUint64(data[offset+8:offset+16], uint64(hv.segments[i].End))
+	}
+
+	_, err := hv.f.WriteAt(data, 0)
+	if err != nil {
+		hv.log.Error("Write segments error", zap.Error(err))
+		return
+	}
+
+	hv.log.Info("Write segments")
 }

@@ -3,8 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"replay/internal/audio"
 	"replay/internal/render"
@@ -47,10 +50,18 @@ func main() {
 		return
 	}
 
-	f, err := os.OpenFile(*path, os.O_RDWR|os.O_CREATE, 0o666)
+	f, err := os.OpenFile(*path, os.O_RDWR, 0o666)
 	if err != nil {
 		log.Error("Open file error", zap.Error(err))
-		return
+		f, err = os.OpenFile(*path, os.O_CREATE|os.O_RDWR, 0o666)
+		if err != nil {
+			log.Error("Create file error", zap.Error(err))
+			return
+		}
+		if _, err := f.Write(make([]byte, 48)); err != nil {
+			log.Error("Write segments header error", zap.Error(err))
+			return
+		}
 	}
 
 	acl, err := audio.Init(log)
@@ -61,10 +72,14 @@ func main() {
 
 	switch *mode {
 	case "record":
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			log.Error("Seek file error", zap.Error(err))
+			os.Exit(1)
+		}
 		acl.Record(f)
 	case "replay":
 		for {
-			_, err := f.Seek(0, 0)
+			_, err := f.Seek(48, io.SeekStart)
 			if err != nil {
 				log.Error("Seek file error", zap.Error(err))
 				os.Exit(1)
@@ -124,6 +139,22 @@ func uiStart(f *os.File, log *zap.Logger) {
 		os.Exit(1)
 	}
 
+	exitChan := make(chan struct{}, 1)
+
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		<-sigChan
+		exitChan <- struct{}{}
+	}()
+
+	go func() {
+		<-exitChan
+		log.Info("Graceful shutdown")
+		view.SaveSegments()
+		os.Exit(0)
+	}()
+
 	for !win.ShouldClose() {
 		gl.Clear(gl.COLOR_BUFFER_BIT)
 
@@ -132,4 +163,5 @@ func uiStart(f *os.File, log *zap.Logger) {
 		glfw.PollEvents()
 		win.SwapBuffers()
 	}
+	exitChan <- struct{}{}
 }

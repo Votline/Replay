@@ -26,8 +26,6 @@ type Compressor struct {
 func NewCompressor(ch, btr, smpR, frameDurMs int, log *zap.Logger) (*Compressor, error) {
 	const op = "compressor.NewCompressor"
 
-	fmt.Printf("NewCompressor: %d %d %d %d\n", ch, btr, smpR, frameDurMs)
-
 	opusEn, err := opus.NewEncoder(smpR, ch, opus.AppAudio)
 	if err != nil {
 		return nil, fmt.Errorf("%s: encoder init: %w", op, err)

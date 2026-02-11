@@ -46,6 +46,8 @@ type AudioSegment struct {
 }
 
 func Init(log *zap.Logger) (*AudioClient, error) {
+	const op = "audio.Init"
+
 	if err := portaudio.Initialize(); err != nil {
 		return nil, fmt.Errorf("Init portaudio: %w", err)
 	}
@@ -88,16 +90,16 @@ func Init(log *zap.Logger) (*AudioClient, error) {
 	}
 
 	if acl.inputDevice == nil || acl.outputDevice == nil {
-		return nil, fmt.Errorf("Failed to find input or output device. Errors:\n%v", errs)
+		return nil, fmt.Errorf("%s: Failed to find input or output device. Errors:\n%v", op, errs)
 	}
 
 	inpCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create compressor: %w", err)
+		return nil, fmt.Errorf("%s: Failed to create compressor: %w", op, err)
 	}
 	outCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create compressor: %w", err)
+		return nil, fmt.Errorf("%s: Failed to create compressor: %w", op, err)
 	}
 
 	acl.inpCmpr = inpCmpr
