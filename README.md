@@ -4,8 +4,6 @@
 
 Replay is a high-performance system audio recorder and player written in Go. It captures system audio output (loopback), compresses it in real-time using a hybrid Opus+Zstd pipeline, and provides a custom OpenGL-based GUI for managing playback segments.
 
-*(Note: Replace this with an actual screenshot of your UI)*
-
 ## 🚀 Key Features
 
 * **System Loopback Recording:** Automatically routes system audio (what you hear) to the recorder via PulseAudio monitor sources.
