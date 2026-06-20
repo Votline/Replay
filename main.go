@@ -131,7 +131,7 @@ func main() {
 				log.Fatal("Seek error", zap.Error(err))
 			}
 			log.Debug("playing")
-			acl.Replay(f)
+			acl.Play(f)
 		}
 	case "record":
 		if _, err := f.Seek(48, io.SeekStart); err != nil {

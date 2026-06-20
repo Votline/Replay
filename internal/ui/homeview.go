@@ -132,7 +132,7 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 						if hv.acl.IsPlaying() {
 							hv.log.Info("Stop replay")
 
-							hv.acl.StopReplay()
+							hv.acl.StopPlay()
 							hv.elems[5], hv.elems[0] = hv.elems[0], hv.elems[5]
 
 							hv.log.Info("Swapped buttons")
@@ -143,10 +143,10 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 
 							go func() {
 								hv.restartReplay()
-								hv.acl.Replay(hv.recReader)
+								hv.acl.Play(hv.recReader)
 								for hv.acl.IsPlaying() {
 									hv.restartReplay()
-									hv.acl.Replay(hv.recReader)
+									hv.acl.Play(hv.recReader)
 								}
 							}()
 

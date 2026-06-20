@@ -27,9 +27,8 @@ Replay is a high-performance system audio recorder and player written in Go. It 
 ## 🛠 Tech Stack
 
 * **Language:** Go (Golang)
-* **Audio I/O:** PortAudio (`gordonklaus/portaudio`)
+* **Audio I/O and Compression:** Go-audio (`Votline/Go-audio`)
 * **Graphics:** OpenGL 4.1 (`go-gl`), GLFW
-* **Compression:** Opus (`hraban/opus`), Zstd (`klauspost/compress/zstd`)
 * **System Integration:** PulseAudio (`pactl` CLI wrappers for routing)
 
 ## 🧠 Architecture Highlights
@@ -92,3 +91,4 @@ This project relies on `pactl` (PulseAudio Control) for automatic monitor source
 This project is distributed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
 Third-party [LICENSES](licenses)
+
