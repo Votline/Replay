@@ -33,6 +33,14 @@ Replay is a high-performance system audio recorder and player written in Go. It 
 
 ## 🧠 Architecture Highlights
 
+```mermaid
+graph TD
+    UI([GLFW Transparent Window]) <-->|Mouse Events / Shaders| HV[HomeView State Machine]
+    HV -->|Control: Record / Play| AC[AudioClient Wrapper]
+    HV -->|Manages 3 Slots Offset| File[(.rep Session File)]
+    AC <-->|Direct Stream I/O via Section R/W| File
+```
+
 ### The Audio Pipeline
 
 The application avoids GC pauses and blocking operations in the audio callback thread by utilizing a custom **Ring Buffer** implementation (`internal/buffer`).
