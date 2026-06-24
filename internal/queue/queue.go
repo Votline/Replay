@@ -1,48 +1,37 @@
 package queue
 
-import (
-	"sync"
-)
-
 type Queue struct {
-	mu  sync.Mutex
 	buf []float32
 }
 
-func NewQueue(bufSize uint64) *Queue {
+func New(bufLen int) *Queue {
 	return &Queue{
-		buf: make([]float32, 0, bufSize),
+		buf: make([]float32, 0, bufLen),
 	}
 }
 
-func (q *Queue) Push(data []float32) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.buf = append(q.buf, data...)
+func (q *Queue) Push(v []float32) {
+	q.buf = append(q.buf, v...)
 }
 
-func (q *Queue) Pop(data []float32) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+func (q *Queue) Pop(p []float32) int {
 	if len(q.buf) == 0 {
 		return 0
 	}
 
-	n := len(data)
-	if n > (len(q.buf)) {
-		n = len(q.buf)
-	}
+	n := len(p)
+	n = min(n, len(q.buf))
 
-	copy(data[:n], q.buf[:n])
+	copy(p[:n], q.buf[:n])
 	q.buf = q.buf[n:]
 
 	return n
 }
 
 func (q *Queue) Reset() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	q.buf = q.buf[:0]
+}
+
+func (q *Queue) Len() int {
+	return len(q.buf)
 }

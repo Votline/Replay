@@ -46,9 +46,31 @@ func (b *RingBuffer) Read(p []float32) int {
 
 	available := w - r
 	toRead := uint64(len(p))
-	if toRead > available {
-		toRead = available
+	toRead = min(toRead, available)
+
+	for i := range toRead {
+		p[i] = b.buf[(r+i)%b.bufSize]
 	}
+
+	atomic.AddUint64(&b.rPos, toRead)
+
+	return int(toRead)
+}
+
+func (b *RingBuffer) ReadAll(p []float32, n int) int {
+	var available uint64 = 0
+	var w, r uint64 = 0, 0
+	spinIdx := 0
+
+	reqLen := uint64(n)
+	for available < reqLen {
+		w = atomic.LoadUint64(&b.wPos)
+		r = atomic.LoadUint64(&b.rPos)
+		available = w - r
+		spin(&spinIdx)
+	}
+
+	toRead := reqLen
 
 	for i := range toRead {
 		p[i] = b.buf[(r+i)%b.bufSize]
@@ -72,4 +94,8 @@ func spin(idx *int) {
 func (b *RingBuffer) Reset() {
 	atomic.StoreUint64(&b.wPos, 0)
 	atomic.StoreUint64(&b.rPos, 0)
+}
+
+func (b *RingBuffer) Len() int {
+	return int(atomic.LoadUint64(&b.wPos) - atomic.LoadUint64(&b.rPos))
 }

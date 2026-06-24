@@ -4,161 +4,44 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"os/exec"
-	"strings"
+	"runtime"
 	"sync"
 	"time"
-
-	"replay/internal/buffer"
-	"replay/internal/compressor"
-	"replay/internal/queue"
 
 	"github.com/gordonklaus/portaudio"
 	"go.uber.org/zap"
 )
 
-const bufSize = 8192
-
-type AudioClient struct {
-	bitrate     int
-	channels    int
-	sampleRate  float64
-	isPlaying   bool
-	isRecording bool
-	duration    time.Duration
-
-	inpBuf   *buffer.RingBuffer
-	inpQueue *queue.Queue
-	outBuf   *buffer.RingBuffer
-
-	inputDevice  *portaudio.DeviceInfo
-	outputDevice *portaudio.DeviceInfo
-
-	inpCmpr *compressor.Compressor
-	outCmpr *compressor.Compressor
-
-	log *zap.Logger
-}
-
-type AudioSegment struct {
-	Start int64
-	End   int64
-}
-
-func Init(log *zap.Logger) (*AudioClient, error) {
-	const op = "audio.Init"
-
-	if err := portaudio.Initialize(); err != nil {
-		return nil, fmt.Errorf("Init portaudio: %w", err)
-	}
-
-	acl := &AudioClient{
-		bitrate:    48000,
-		channels:   2,
-		sampleRate: 48000.0,
-		duration:   20,
-
-		inpBuf:   buffer.NewRB(bufSize),
-		inpQueue: queue.NewQueue(bufSize),
-		outBuf:   buffer.NewRB(bufSize),
-
-		inputDevice:  nil,
-		outputDevice: nil,
-
-		log: log,
-	}
-
-	errs := make([]string, 0, 20)
-	maxAttempts := 0
-	for (acl.inputDevice == nil || acl.outputDevice == nil) && maxAttempts <= 10 {
-		input, err := acl.initInputDevice()
-		if err == nil {
-			acl.inputDevice = input
-		} else {
-			errs = append(errs, err.Error()+"\n")
-		}
-
-		output, err := acl.initOutputDevice()
-		if err == nil {
-			acl.outputDevice = output
-		} else {
-			errs = append(errs, err.Error()+"\n")
-		}
-
-		maxAttempts++
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if acl.inputDevice == nil || acl.outputDevice == nil {
-		return nil, fmt.Errorf("%s: Failed to find input or output device. Errors:\n%v", op, errs)
-	}
-
-	inpCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
-	if err != nil {
-		return nil, fmt.Errorf("%s: Failed to create compressor: %w", op, err)
-	}
-	outCmpr, err := compressor.NewCompressor(acl.channels, acl.bitrate, int(acl.sampleRate), int(acl.duration), log)
-	if err != nil {
-		return nil, fmt.Errorf("%s: Failed to create compressor: %w", op, err)
-	}
-
-	acl.inpCmpr = inpCmpr
-	acl.outCmpr = outCmpr
-
-	return acl, nil
-}
-
-func (acl *AudioClient) initInputDevice() (*portaudio.DeviceInfo, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			acl.log.Error("initInputDevice recovered", zap.Any("recover", r))
-		}
-	}()
-
-	return portaudio.DefaultInputDevice()
-}
-
-func (acl *AudioClient) initOutputDevice() (*portaudio.DeviceInfo, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			acl.log.Error("initOutputDevice recovered", zap.Any("recover", r))
-		}
-	}()
-
-	return portaudio.DefaultOutputDevice()
-}
-
-func (acl *AudioClient) Record(w io.Writer) error {
+func (a *AudioClient) Record(w io.Writer) error {
 	const op = "audio.Record"
 
-	acl.inpBuf.Reset()
-	acl.inpQueue.Reset()
+	a.inpRBuf.Reset()
+	a.inpQueue.Reset()
+	a.isRecording = true
 
-	acl.isRecording = true
-
-	go acl.AutoRouteToMonitor()
-
-	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
+	samplePerMs := int(a.sampleRate*a.duration/1000) * a.channels
 
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
-				Device:   acl.inputDevice,
-				Channels: acl.channels,
+				Device:   a.inpDevice,
+				Channels: a.channels,
 			},
-			SampleRate:      acl.sampleRate,
+			SampleRate:      float64(a.sampleRate),
 			FramesPerBuffer: samplePerMs,
 		},
 		func(in []float32) {
-			acl.inpBuf.Write(in)
-			acl.log.Info("Recorded", zap.Int("len", len(in)))
+			a.inpRBuf.Write(in)
+			a.log.Debug("Recorded",
+				zap.String("op", op),
+				zap.Int("len", len(in)))
 		})
 	if err != nil {
-		return fmt.Errorf("%s: error during record: %w", op, err)
+		return fmt.Errorf("%s: create rec stream: %w", op, err)
 	}
 
 	if err := stream.Start(); err != nil {
-		return fmt.Errorf("%s: start stream: %w", op, err)
+		return fmt.Errorf("%s: start rec stream: %w", op, err)
 	}
 
 	defer stream.Stop()
@@ -166,142 +49,147 @@ func (acl *AudioClient) Record(w io.Writer) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		localBuf := make([]float32, bufSize)
-		for acl.isRecording {
-			n := acl.inpBuf.Read(localBuf)
-			acl.log.Info("Read", zap.Int("len", n))
-			if n > 0 {
-				acl.inpQueue.Push(localBuf[:n])
-			} else {
-				time.Sleep(time.Millisecond)
-			}
+		for a.isRecording {
+			streamBuf := make([]float32, a.readSize)
+			a.inpRBuf.ReadAll(streamBuf, len(streamBuf))
+			a.inpQueue.Push(streamBuf)
+			a.log.Debug("Pushed to input queue",
+				zap.String("op", op),
+				zap.Int("len", len(streamBuf)))
 		}
 	})
 
-	localBuf := make([]float32, samplePerMs)
-	for acl.isRecording {
-		n := acl.inpQueue.Pop(localBuf)
-		acl.log.Info("Popped", zap.Int("len", n))
-		if n > 0 {
-			compressed, err := acl.inpCmpr.Compress(localBuf[:n])
-			if err != nil {
-				acl.log.Error("Compress error. Drop chunk", zap.Error(err))
-				continue
-			}
-			acl.log.Info("Compressed", zap.Int("len", len(compressed)))
-
-			size := uint32(len(compressed))
-			if err := binary.Write(w, binary.LittleEndian, size); err != nil {
-				acl.log.Error("Write size error", zap.Error(err))
-				continue
-			}
-
-			if _, err := w.Write(compressed); err != nil {
-				acl.log.Error("Write compressed error", zap.Error(err))
-				continue
-			}
-		} else {
+	fileBuf := make([]float32, samplePerMs)
+	for a.isRecording {
+		n := a.inpQueue.Pop(fileBuf)
+		if n == 0 {
 			time.Sleep(time.Millisecond)
-		}
-	}
-
-	return nil
-}
-
-func (acl *AudioClient) Replay(r io.Reader) error {
-	const op = "audio.Replay"
-
-	acl.outBuf.Reset()
-	acl.isPlaying = true
-
-	samplePerMs := int(acl.sampleRate*float64(acl.duration)/1000) * acl.channels
-
-	stream, err := portaudio.OpenStream(
-		portaudio.StreamParameters{
-			Output: portaudio.StreamDeviceParameters{
-				Device:   acl.outputDevice,
-				Channels: acl.channels,
-			},
-			SampleRate:      acl.sampleRate,
-			FramesPerBuffer: samplePerMs,
-		},
-		func(in, out []float32) {
-			n := acl.outBuf.Read(out)
-			for i := n; i < len(out); i++ {
-				out[i] = 0
-			}
-		})
-	if err != nil {
-		return fmt.Errorf("%s: error during record: %w", op, err)
-	}
-	if err := stream.Start(); err != nil {
-		return fmt.Errorf("%s: start stream: %w", op, err)
-	}
-
-	defer stream.Stop()
-	defer stream.Close()
-
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for acl.isPlaying {
-			var size uint32
-
-			err := binary.Read(r, binary.LittleEndian, &size)
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				acl.log.Info("End of file")
-				break
-			}
-			if err != nil {
-				acl.log.Error("Read error", zap.Error(err))
-				return
-			}
-
-			packet := make([]byte, size)
-			_, err = io.ReadFull(r, packet)
-			if err != nil {
-				acl.log.Error("Read packet error", zap.Error(err))
-				return
-			}
-
-			pcm, err := acl.outCmpr.Decompress(packet, bufSize)
-			if err != nil {
-				acl.log.Error("Decompress error. Drop chunk", zap.Error(err))
-				continue
-			}
-
-			acl.outBuf.Write(pcm)
+			continue
 		}
 
-		time.Sleep(acl.duration * time.Millisecond)
-	})
+		a.log.Debug("Popped from input queue",
+			zap.String("op", op),
+			zap.Int("len", n))
+
+		compressedChunk, err := a.inpCmpr.Compress(fileBuf[:n])
+		if err != nil {
+			a.log.Error("Compression error",
+				zap.String("op", op),
+				zap.Error(err))
+			continue
+		}
+
+		size := uint32(len(compressedChunk))
+		if err := binary.Write(w, binary.LittleEndian, size); err != nil {
+			a.log.Error("Write error",
+				zap.String("op", op),
+				zap.Error(err))
+			continue
+		}
+
+		if _, err := w.Write(compressedChunk); err != nil {
+			a.log.Error("Write error",
+				zap.String("op", op),
+				zap.Error(err))
+			continue
+		}
+	}
 
 	wg.Wait()
 
 	return nil
 }
 
-func (acl *AudioClient) AutoRouteToMonitor() error {
-	out, _ := exec.Command("pactl", "get-default-sink").Output()
-	monitorName := strings.TrimSpace(string(out)) + ".monitor"
+func (a *AudioClient) Replay(r io.Reader) error {
+	const op = "audio.Play"
 
-	time.Sleep(200 * time.Millisecond)
+	a.outRBuf.Reset()
+	a.isPlaying = true
 
-	out, err := exec.Command("pactl", "list", "short", "source-outputs").Output()
+	samplePerMs := int(a.sampleRate*a.duration/1000) * a.channels
+
+	stream, err := portaudio.OpenStream(
+		portaudio.StreamParameters{
+			Output: portaudio.StreamDeviceParameters{
+				Device:   a.outDevice,
+				Channels: a.channels,
+			},
+			SampleRate:      float64(a.sampleRate),
+			FramesPerBuffer: samplePerMs,
+		},
+		func(in, out []float32) {
+			n := a.outRBuf.Read(out)
+			for i := n; i < len(out); i++ {
+				out[i] = 0
+			}
+			a.log.Debug("Playing",
+				zap.String("op", op),
+				zap.Int("len", n))
+		})
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: create play stream: %w", op, err)
 	}
 
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		if line == "" {
+	if err := stream.Start(); err != nil {
+		return fmt.Errorf("%s: start play stream: %w", op, err)
+	}
+
+	defer stream.Stop()
+	defer stream.Close()
+
+	fromFile := make([]byte, samplePerMs)
+	var size uint32
+	for a.isPlaying {
+		err := binary.Read(r, binary.LittleEndian, &size)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			a.log.Debug("Playing finished")
+			break
+		}
+		if err != nil {
+			a.log.Error("Read error",
+				zap.String("op", op),
+				zap.Error(err))
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			streamID := fields[0]
-			exec.Command("pactl", "move-source-output", streamID, monitorName).Run()
+
+		a.log.Debug("Read packet",
+			zap.String("op", op),
+			zap.Int("size", int(size)))
+
+		if size > uint32(len(fromFile)) {
+			fromFile = make([]byte, size)
 		}
+		buf := fromFile[:size]
+
+		if _, err := io.ReadFull(r, buf); err != nil {
+			a.log.Error("Read error",
+				zap.String("op", op),
+				zap.Error(err))
+			continue
+		}
+
+		pcm, err := a.outCmpr.Decompress(buf)
+		if err != nil {
+			a.log.Error("Decompression error",
+				zap.String("op", op),
+				zap.Error(err))
+			continue
+		}
+
+		a.outRBuf.Write(pcm)
+
+		a.log.Debug("Write packet",
+			zap.String("op", op),
+			zap.Int("size", len(pcm)))
 	}
+
+	for a.outRBuf.Len() > 0 {
+		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	time.Sleep(time.Duration(a.duration) * time.Millisecond)
+
 	return nil
 }
 

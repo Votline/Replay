@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"embed"
 	"encoding/binary"
 	"io"
 	"os"
@@ -38,7 +39,7 @@ type HomeView struct {
 	recReader *io.SectionReader
 }
 
-func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, log *zap.Logger) (*HomeView, error) {
+func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, log *zap.Logger, assets embed.FS) (*HomeView, error) {
 	acl, err := audio.Init(log)
 	if err != nil {
 		return nil, err
@@ -46,7 +47,12 @@ func CreateHomeView(pg uint32, ofC, ofTex int32, win *glfw.Window, f *os.File, l
 
 	hv := &HomeView{pg: pg, ofC: ofC, ofTex: ofTex, win: win, f: f, acl: acl, log: log}
 	hv.loadSegments()
-	hv.texID = render.LoadTexture("assets/texture.png")
+	fileText, err := assets.Open("assets/texture.png")
+	if err != nil {
+		return nil, err
+	}
+	defer fileText.Close()
+	hv.texID = render.LoadTexture(fileText)
 
 	addRect := func(x, y, w, h, u1, v1, u2, v2 float32, idx int, name string) {
 		vertices := []float32{
@@ -166,6 +172,11 @@ func (hv *HomeView) btnCallback() func(w *glfw.Window, b glfw.MouseButton, a glf
 							return
 						} else {
 							hv.log.Info("Start record")
+
+							if hv.segments[hv.curIdx].Start < 48 {
+								hv.segments[hv.curIdx].Start = 48
+								hv.f.Seek(48, io.SeekStart)
+							}
 
 							if hv.segments[hv.curIdx].Start == 0 {
 								pos, _ := hv.f.Seek(0, io.SeekCurrent)

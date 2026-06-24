@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag"
+	"embed"
 	"fmt"
 	"io"
 	"os"
@@ -19,41 +19,95 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func initLog(d bool) *zap.Logger {
+const helpMsg = `
+Usage: replay <command> <path> <debug>
+
+Commands:
+	play <path> play audio from file
+	record <path> record audio to file
+	ui <path> start user interface. Play and record from file
+Args:
+	<debug> turn on debug mode
+Aliases:
+	play: p, play, rp, replay, -p, --play, -rp, --replay
+	record: r, record, -r, --record
+	debug: d, debug, dbg, -d, --debug, -dbg, --dbg
+	ui: u, ui, -u, --ui
+	help: h, help, -h, --help
+`
+
+//go:embed assets
+var assets embed.FS
+
+func parseArgs() (mode, path string, dbg bool) {
+	args := os.Args[1:] // <mode> <path> <dbg>
+
+	switch args[0] {
+	case "p", "play", "-p", "--play", "rp", "replay", "-rp", "--replay":
+		mode = "play"
+	case "r", "record", "-r", "--record":
+		mode = "record"
+	case "h", "help", "-h", "--help":
+		fmt.Print(helpMsg)
+		return "", "", false
+	case "u", "ui", "-u", "--ui":
+		mode = "ui"
+	default:
+		fmt.Println("Invalid mode. Use 'help' for help.")
+		return "", "", false
+	}
+
+	if len(args) < 2 {
+		fmt.Println("Usage: replay <mode> <path>")
+		return
+	}
+
+	path = args[1]
+	if len(args) > 2 {
+		switch args[2] {
+		case "d", "debug", "-d", "--debug", "dbg", "-dbg", "--dbg":
+			dbg = true
+		}
+	}
+
+	return mode, path, dbg
+}
+
+func initLog(dbg bool) *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
 	cfg.Encoding = "console"
 	cfg.EncoderConfig.TimeKey = ""
-	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	cfg.DisableStacktrace = true
+	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	cfg.EncoderConfig.ConsoleSeparator = " | "
+	cfg.Level.SetLevel(zap.ErrorLevel)
 
-	lvl := zapcore.ErrorLevel
-	if d {
-		lvl = zapcore.DebugLevel
+	if dbg {
+		cfg.Level.SetLevel(zap.DebugLevel)
 	}
-	cfg.Level = zap.NewAtomicLevelAt(lvl)
-
 	log, _ := cfg.Build()
 
 	return log
 }
 
 func main() {
-	debug := flag.Bool("debug", false, "debug mode")
-	path := flag.String("path", "", "path to file")
-	mode := flag.String("mode", "", "mode(record|replay)")
-	flag.Parse()
-
-	log := initLog(*debug)
-
-	if *path == "" {
-		log.Error("Path is empty")
+	mode, path, dbg := parseArgs()
+	if mode == "" {
 		return
 	}
 
-	f, err := os.OpenFile(*path, os.O_RDWR, 0o666)
+	log := initLog(dbg)
+	defer log.Sync()
+
+	acl, err := audio.Init(log)
+	if err != nil {
+		log.Fatal("Init error", zap.Error(err))
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0o666)
 	if err != nil {
 		log.Error("Open file error", zap.Error(err))
-		f, err = os.OpenFile(*path, os.O_CREATE|os.O_RDWR, 0o666)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o666)
 		if err != nil {
 			log.Error("Create file error", zap.Error(err))
 			return
@@ -63,33 +117,31 @@ func main() {
 			return
 		}
 	}
+	defer f.Close()
 
-	acl, err := audio.Init(log)
-	if err != nil {
-		log.Error("Init audio error", zap.Error(err))
-		return
-	}
+	log.Debug("Received data",
+		zap.String("mode", mode),
+		zap.String("path", path),
+		zap.Bool("debug", dbg))
 
-	switch *mode {
-	case "record":
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			log.Error("Seek file error", zap.Error(err))
-			os.Exit(1)
-		}
-		acl.Record(f)
-	case "replay":
+	switch mode {
+	case "play":
 		for {
-			_, err := f.Seek(48, io.SeekStart)
-			if err != nil {
-				log.Error("Seek file error", zap.Error(err))
-				os.Exit(1)
+			if _, err := f.Seek(48, io.SeekStart); err != nil {
+				log.Fatal("Seek error", zap.Error(err))
 			}
+			log.Debug("playing")
 			acl.Replay(f)
 		}
-	case "":
+	case "record":
+		if _, err := f.Seek(48, io.SeekStart); err != nil {
+			log.Fatal("Seek error", zap.Error(err))
+		}
+		log.Debug("recording")
+		acl.Record(f)
+	case "ui":
+		log.Debug("ui")
 		uiStart(f, log)
-	default:
-		fmt.Println("Usage: replay --path=file.bak --mode=record|replay")
 	}
 }
 
@@ -131,7 +183,7 @@ func uiStart(f *os.File, log *zap.Logger) {
 	pg, ofC, ofTex := render.Setup()
 	defer gl.DeleteProgram(pg)
 
-	view, err := ui.CreateHomeView(pg, ofC, ofTex, win, f, log)
+	view, err := ui.CreateHomeView(pg, ofC, ofTex, win, f, log, assets)
 	if err != nil {
 		log.Error("Failed to create home view",
 			zap.String("op", op),

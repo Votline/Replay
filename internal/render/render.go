@@ -5,7 +5,7 @@ import (
 	"image/draw"
 	_ "image/jpeg"
 	_ "image/png"
-	"os"
+	"io/fs"
 
 	"github.com/go-gl/gl/v4.1-core/gl"
 )
@@ -72,13 +72,7 @@ func ElemRender(pg, vao, texID uint32, vtq, ofC, ofTex int32) {
 	gl.BindVertexArray(0)
 }
 
-func LoadTexture(path string) uint32 {
-	imgFile, err := os.Open(path)
-	if err != nil {
-		panic(err)
-	}
-	defer imgFile.Close()
-
+func LoadTexture(imgFile fs.File) uint32 {
 	img, _, err := image.Decode(imgFile)
 	if err != nil {
 		panic(err)
